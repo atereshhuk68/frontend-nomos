@@ -1,6 +1,6 @@
 ---
 name: frontend-nomos
-description: 'TypeScript patterns (discriminated unions, branded types, satisfies, never-exhaustive, Zod), React component patterns (composition, compound, error boundary), anti-patterns (derived state, unnecessary effect, state too high), performance (render boundaries, React Compiler, LCP), CSS-over-JS (has, popover, container queries, scroll-driven, light-dark, contrast-color, starting-style, in-n-out 3-state), security (CSP, DOMPurify, HttpOnly cookies), a11y (keyboard nav, semantic HTML), testing (Vitest, Playwright, property-based, mutation), DOM manipulation (WeakMap, AbortController), naming conventions, and modern React ecosystem (TanStack Query, Zustand, shadcn/ui, Vite).'
+description: 'Provides TypeScript/React coding conventions and anti-pattern checks covering naming, semantic HTML, performance (render boundaries, LCP), CSS-over-JS (container queries, scroll-driven, light-dark), security, a11y, testing (Vitest, Playwright), DOM APIs, and the React ecosystem (TanStack Query, Zustand). Use when writing or reviewing frontend TypeScript/React/CSS code, or when debugging live browser runtime errors (Uncaught Error, minified stack traces) and cross-browser bugs (Firefox/Chrome slider/flicker).'
 ---
 
 ## Naming
