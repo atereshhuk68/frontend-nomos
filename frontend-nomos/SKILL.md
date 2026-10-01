@@ -1,6 +1,6 @@
 ---
 name: frontend-nomos
-description: 'Provides TypeScript/React coding conventions and anti-pattern checks covering naming, semantic HTML, performance (render boundaries, LCP), CSS-over-JS (container queries, scroll-driven, light-dark), security, a11y, testing (Vitest, Playwright), DOM APIs, and the React ecosystem (TanStack Query, Zustand). Use when writing or reviewing frontend TypeScript/React/CSS code, or when debugging live browser runtime errors (Uncaught Error, minified stack traces) and cross-browser bugs (Firefox/Chrome slider/flicker).'
+description: 'MUST USE for any React/TypeScript/CSS frontend work — writing, reviewing, refactoring, or debugging. Covers React (hooks, effect-vs-event, derived state, render boundaries, React Compiler, React 19 use()/useFormStatus/useActionState/useOptimistic, high-frequency real-time rendering), browser primitives over JS (dialog, popover, details/summary, base-select, :has, container queries, scroll-driven, scroll-snap carousel), accessibility (keyboard nav, focus management, inert, native semantics, contrast), TypeScript, performance (LCP, render boundaries), security (XSS/CSP/CSRF), testing (Vitest, Playwright), and DOM APIs. Trigger whenever the task mentions React, a component, JSX, hooks, useEffect, re-render, state/props, TanStack Query/Router, or frontend HTML/CSS — and when debugging browser runtime errors (Uncaught Error, minified stack traces, hydration mismatch) or cross-browser bugs.'
 ---
 
 ## Naming
@@ -85,15 +85,6 @@ type Route = `/blog/${string}`;
 // ✅ type Role = 'admin' | 'user';
 ```
 
-## Zod
-
-```ts
-const S = z.object({ id: z.string().uuid(), email: z.string().email() });
-type T = z.infer<typeof S>;
-const parsed = S.parse(await res.json()); // trust boundary — throws
-const safe = S.safeParse(formData); // user input — expected fail
-```
-
 ## Component Patterns
 
 ```tsx
@@ -154,6 +145,21 @@ class ErrorBoundary extends React.Component<{ children: ReactNode }, { hasError:
 // Speculative async — see Code Smells section
 ```
 
+## Data Fetching (TanStack Query + Router)
+
+```ts
+// queryKey is hierarchical — scope invalidations, never copy server data into local state
+queryClient.invalidateQueries({ queryKey: ['users'] });      // all users queries
+queryClient.invalidateQueries({ queryKey: ['users', 42] });  // one user
+
+// Prefetch as early as the route loader, but keep loader + component in sync — one queryOptions
+// ❌ loader ensureQueryData(...) + component useSuspenseQuery(...) duplicated → drift, waterfalls
+// ✅ share ONE queryOptions via Route Context; loader/component differ only in the call
+context: ({ params, deps }) => ({ dashboardQueryOptions: dashboardQueryOptions(params.id, deps) }),
+loader: async ({ context }) => context.queryClient.ensureQueryData(context.dashboardQueryOptions),
+// loaderDeps names the params that uniquely identify the loaded data (don't re-run on every param)
+```
+
 ## React Performance: Render Boundaries First
 
 Most perf problems come from **state too high**, not missing memo. Three failure modes: too wide (half page re-renders), too frequent (keystroke propagates through heavy trees), too expensive (heavy work on hot path).
@@ -171,6 +177,49 @@ React Compiler eliminates manual memo in components, but can't fix poor separati
 <img srcset="..." sizes="auto" loading="lazy" />
 ```
 
+## React Compiler
+
+Build-time Babel plugin — auto-memoizes, so drop manual `useMemo`/`useCallback`/`React.memo`.
+
+```bash
+npx react-compiler-healthcheck       # audit readiness before adopting
+npm i -D babel-plugin-react-compiler eslint-plugin-react-compiler
+```
+
+```js
+// Vite:      react({ babel: { plugins: [['babel-plugin-react-compiler', {}]] } })
+// Next 15:   experimental: { reactCompiler: true }
+// Gradual:   { compilationMode: 'annotation' } → opt in per component with "use memo"
+```
+
+Manual control still needed for: `useSyncExternalStore` (external stores), Web Workers / Canvas / imperative DOM via refs, `requestAnimationFrame` loops, class components (not processed).
+
+```
+// Gotcha: mutating during render breaks compiler caching — copy first
+// ❌ items.sort(...)          ✅ [...items].sort(...)
+```
+
+## High-Frequency / Real-Time Data
+
+Under ~30 updates/sec per stream: none of this — just RAF-coalesce `setState`. Above it, promote step by step.
+
+```ts
+// 1kHz per-sample setState ≈ 19k renders/s; batching ~16 samples per frame = 60 renders/s. That's the whole trick.
+// 1. External store, not React state — ring buffer over Float32Array (O(1) insert, bounded heap)
+// 2. Split shape from values — React re-renders on shape changes (rare); values never touch React
+// 3. Web Workers — postMessage({samples}, [samples.buffer]) is transferable: O(1), no copy
+// 4. SharedArrayBuffer + Atomics for shared memory (needs cross-origin isolation, see below)
+// 5. canvas.transferControlToOffscreen() → worker draws off the main thread
+// 6. Decimate before drawing (min-max per pixel column) — the biggest CPU win
+// 7. WebGL only when Profiler proves Canvas is the bottleneck
+```
+
+```
+// SharedArrayBuffer requires cross-origin isolation (breaks 3rd-party embeds that don't opt in)
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: require-corp
+```
+
 ## React 19
 
 ```tsx
@@ -184,6 +233,15 @@ function Submit() {
 function C({ p }: { p: Promise<Data> }) {
   const d = use(p);
 }
+
+// useActionState — form action + error + pending in one
+const [error, submitAction, pending] = useActionState(serverAction, initialState);
+
+// useOptimistic — for overlapping writes, never build from stale rendered state
+// ❌ each optimistic write derived from current rendered value → lost updates
+// ✅ useActionState as an ordered async reducer (prev confirmed + change), layer useOptimistic on top;
+//    on failure show the error and fall back to the last confirmed state
+const [optimistic, addOptimistic] = useOptimistic(items, (cur, next) => [...cur, next]);
 ```
 
 ## Hooks
@@ -221,7 +279,7 @@ function useDebounce<T>(v: T, d: number): T {
 // Auth: HttpOnly cookies, never localStorage — any XSS reads localStorage
 // Cookie: HttpOnly; Secure; SameSite=Strict
 // CSP: script-src 'nonce-...' over 'unsafe-inline'; strict-dynamic for code-split chunks
-// Validate server inputs with Zod safeParse — TS only covers compile time
+// Validate external/user input at the trust boundary — TS only covers compile time
 // Add CSRF tokens (X-CSRF-Token header) for state-changing requests
 // Test CSP with Content-Security-Policy-Report-Only before enforcing
 ```
@@ -252,12 +310,18 @@ useEffect(() => {
     ref.current?.focus();
   } else prev?.focus();
 }, [open]);
+
+// Native <dialog>.showModal() gives focus trap + top-layer + Esc + focus return for free
+// inert the background while a custom modal is open (showModal does this itself)
+// :focus-visible for keyboard rings — no mouse-click flicker
+// aria-live="polite" to announce async results; label every control (aria-label / <label>)
+// contrast >= 4.5:1 — contrast-color(var(--bg)) auto-picks black/white per WCAG
 ```
 
-## CSS
+## Browser Primitives (HTML/CSS over JS)
 
 ```css
-// CSS does more — browser does the work
+// CSS/HTML does more — browser does the work; drop the React state + handlers
 // ✅ :has() — parent state toggling, no JS classList
 // ✅ popover — modals/dropdowns, zero JS, light-dismiss, top-layer
 // ✅ container queries — replaces ResizeObserver
@@ -273,6 +337,13 @@ useEffect(() => {
 // ✅ @starting-style — animate elements entering display:block (dialogs, popovers)
 // ✅ sizes="auto" — browser determines image sizes for lazy-loaded images
 // ✅ align-content: center — single-child centering without flexbox/grid
+// ✅ <dialog> + showModal() — true modal: top-layer, ::backdrop, inert bg, Esc, focus return
+// ✅ popover + popovertarget — menus/light popups, light-dismiss, top-layer, zero JS
+// ✅ <details>/<summary> — accordion; ⚠ open + onToggle fires on mount in React → guard with a mounted ref
+// ✅ appearance: base-select + ::picker(select) + <selectedcontent> — customizable native select
+// ✅ scroll-snap + scroll-marker-group + ::scroll-button() + ::scroll-marker — carousel, no JS
+// ✅ animation-timeline: view() + animation-range — reveal on scroll (wrap in @supports)
+// ✅ :has(#toggle:checked) + color-scheme — dark mode without Context/re-render (persist with tiny JS)
 
 // In-n-out animation: 3-state system (3→2→1 source order)
 dialog {
@@ -316,9 +387,9 @@ ds-card {
 ## Ecosystem (2026)
 
 ```
-// Data: TanStack Query (default async state manager)
-// State: Zustand (lightweight) > Jotai (atomic) > Redux Toolkit (enterprise)
-// Forms: React Hook Form + Zod, or TanStack Form
+// Data: TanStack Query (server state) + TanStack Router (type-safe routing / prefetch)
+// Client UI state: React-native first — useState/useReducer, URL, Context; add a store only when proven
+// Forms: React Hook Form or TanStack Form
 // Styling: Tailwind v4, shadcn/ui, Panda CSS (type-safe atomic CSS)
 // Build: Vite (default), Turborepo (monorepo)
 // Auth: Better Auth, Auth.js
@@ -327,11 +398,16 @@ ds-card {
 
 ## Red Flags
 
-| Pattern                                      | Fix            |
-| -------------------------------------------- | -------------- |
-| `eslint-disable react-hooks/exhaustive-deps` | Refactor       |
-| Component inside component                   | Move out       |
-| `key={index}`                                | Stable id      |
-| `any` without justification                  | Proper type    |
-| Barrel `index.ts` in app code                | Direct import  |
-| `React.FC<Props>`                            | Explicit props |
+| Pattern                                      | Fix              |
+| -------------------------------------------- | ---------------- |
+| `eslint-disable react-hooks/exhaustive-deps` | Refactor         |
+| Component inside component                   | Move out         |
+| `key={index}`                                | Stable id        |
+| `any` without justification                  | Proper type      |
+| Barrel `index.ts` in app code                | Direct import    |
+| `React.FC<Props>`                            | Explicit props   |
+| `useEffect` for derived state / event logic  | Render / handler |
+| `<div onClick>` / `role="button"`            | `<button>`       |
+| Unsanitized `dangerouslySetInnerHTML`        | DOMPurify        |
+| Missing `alt` / unlabeled control            | Semantic a11y    |
+| Copying query data into `useState`           | Read `useQuery`  |
