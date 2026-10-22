@@ -1,7 +1,12 @@
 ---
 name: frontend-nomos
-description: 'MUST USE for any React/TypeScript/CSS frontend work — writing, reviewing, refactoring, or debugging. Covers React (hooks, effect-vs-event, derived state, render boundaries, React Compiler, React 19 use()/useFormStatus/useActionState/useOptimistic, high-frequency real-time rendering), browser primitives over JS (dialog, popover, details/summary, base-select, :has, container queries, scroll-driven, scroll-snap carousel), accessibility (keyboard nav, focus management, inert, native semantics, contrast), TypeScript, performance (LCP, render boundaries), security (XSS/CSP/CSRF), testing (Vitest, Playwright), and DOM APIs. Trigger whenever the task mentions React, a component, JSX, hooks, useEffect, re-render, state/props, TanStack Query/Router, or frontend HTML/CSS — and when debugging browser runtime errors (Uncaught Error, minified stack traces, hydration mismatch) or cross-browser bugs.'
+description: 'MUST USE for any React/TypeScript/CSS frontend work — writing, reviewing, refactoring, or debugging. Covers React (hooks, effect-vs-event, derived state, render boundaries, React Compiler, React 19 use()/useFormStatus/useActionState/useOptimistic, real-time rendering), browser primitives over JS (dialog, popover, details, invoker commands, base-select, :has, container/style queries, anchor positioning, view transitions, scroll-driven, scroll-snap), real-time transport (WebSockets, SSE), Temporal/Intl, accessibility (keyboard nav, focus management, inert, native semantics, contrast), TypeScript, performance (LCP, content-visibility, ship-less-JS), security (XSS/CSP/CSRF, CSS exfil), testing (Vitest, Playwright), DOM APIs. Trigger whenever the task mentions React, a component, JSX, hooks, useEffect, re-render, state/props, TanStack Query/Router, or frontend HTML/CSS — and when debugging browser runtime errors (Uncaught Error, minified stack, hydration mismatch) or cross-browser bugs.'
 ---
+Deep dives in `references/` — read when task touches area:
+
+- `references/realtime.md` — high-frequency rendering ladder, WebSocket reconnect/heartbeat/backpressure, SSE-vs-WS call, stale-response abort races
+- `references/css-2026.md` — anchor positioning / view transitions / style queries failure modes, layout & root scroller, base-select fallback, CSS exfiltration, micro-UX
+- `references/typescript-react.md` — assertion functions, `as const satisfies`, Context cost, Baseline ship-less-JS judgment, Temporal, ES2026, Intl, TS6
 
 ## Naming
 
@@ -16,16 +21,25 @@ const isAuthenticated = true;                   // is/has prefix
 
 ## Semantic HTML
 
-Native elements carry behavior + a11y — don't rebuild them:
+Pick element that already does job — native elements ship behavior, keyboard, a11y that custom code must re-implement (and usually breaks: disabled state, form participation, Enter/Space activation).
 
-```
-// ❌ <div role="button" tabIndex={0} onKeyDown={...}>
-// ✅ <button>  (tab order, Enter/Space, disabled, form participation)
-// ✅ <details>/<summary> for disclosure (built-in keyboard, a11y)
-// ✅ <label>, type="email", autocomplete, required — form semantics
+```tsx
+// Accordion with radio behavior — shared name, zero JS
+<details name="faq">...</details>
+<details name="faq">...</details>   // opening one closes the siblings
+
+// Declarative modal control — no onClick handler needed
+<button command="show-modal" commandfor="checkout-dialog">Open</button>
+<dialog id="checkout-dialog">...</dialog>
+
+// Collapsed content that find-in-page reveals automatically
+<section hidden="until-found">...</section>
+
+// Declarative trigger for the newer close sequence
+<button command="request-close" commandfor="dlg">✕</button>
 ```
 
-Decision checklist: (1) Is there an element that already does this? (2) Does the custom version preserve keyboard behavior? (3) Does it work without a mouse? (4) Does it still make sense inside a form?
+Decision checklist: (1) Element already does this? (2) Custom version keeps keyboard behavior? (3) Works without mouse? (4) Still makes sense inside form?
 
 ## Code Smells
 
@@ -83,6 +97,11 @@ type Route = `/blog/${string}`;
 // Avoid enum — literal unions are simpler to refactor and serialize
 // ❌ enum Role { Admin, User }
 // ✅ type Role = 'admin' | 'user';
+
+// useState(null) infers the type as null — useState<User | null>(null) or delete the dead state
+
+// More: assertion functions, as const satisfies, Context cost, ship-less-JS judgment,
+// TimeoutError gotcha, ES2026, Intl, Temporal — references/typescript-react.md
 ```
 
 ## Component Patterns
@@ -147,6 +166,8 @@ class ErrorBoundary extends React.Component<{ children: ReactNode }, { hasError:
 
 ## Data Fetching (TanStack Query + Router)
 
+Server state stay in cache, never local copies. Let keying solve correctness (races, staleness) that hand-rolled effects re-introduce:
+
 ```ts
 // queryKey is hierarchical — scope invalidations, never copy server data into local state
 queryClient.invalidateQueries({ queryKey: ['users'] });      // all users queries
@@ -158,28 +179,34 @@ queryClient.invalidateQueries({ queryKey: ['users', 42] });  // one user
 context: ({ params, deps }) => ({ dashboardQueryOptions: dashboardQueryOptions(params.id, deps) }),
 loader: async ({ context }) => context.queryClient.ensureQueryData(context.dashboardQueryOptions),
 // loaderDeps names the params that uniquely identify the loaded data (don't re-run on every param)
+
+// Cancellation is not failure: when you do hand-roll a signal, swallow AbortError silently
+// (never log/metric it as an error) — and remember only the newest response may paint.
+// Reconnect/heartbeat/backpressure for streams → references/realtime.md
 ```
 
 ## React Performance: Render Boundaries First
 
-Most perf problems come from **state too high**, not missing memo. Three failure modes: too wide (half page re-renders), too frequent (keystroke propagates through heavy trees), too expensive (heavy work on hot path).
+Most perf problems from **state too high**, not missing memo. Three failure modes: too wide (half page re-renders), too frequent (keystroke propagates through heavy trees), too expensive (heavy work on hot path).
 
-Before useMemo, ask: (1) What changed? (2) Why did that reach this component? (3) Can state move lower? (4) Are oversized objects in props?
+Before useMemo, ask: (1) What changed? (2) Why did it reach this component? (3) Can state move lower? (4) Oversized objects in props?
 
-React Compiler eliminates manual memo in components, but can't fix poor separation — boundary design is still on you.
+React Compiler kills manual memo in components, but can't fix poor separation — boundary design still on you. Context especially: any provider-value change re-renders EVERY consumer; `useContextSelector` never shipped. Reframe: don't prevent renders, make renders cheap → `references/typescript-react.md`.
 
-```
+```tsx
 // LCP optimization: fetchpriority="high" on above-fold images
 <img src="hero.webp" fetchpriority="high" alt="" />
 
 // Never lazy-load above-fold images — adds ~360ms delay
 // sizes="auto" with srcset for fully automatic responsive images
 <img srcset="..." sizes="auto" loading="lazy" />
+
+// Hand-rolled fetch races and WebSocket transport judgments → references/realtime.md
 ```
 
 ## React Compiler
 
-Build-time Babel plugin — auto-memoizes, so drop manual `useMemo`/`useCallback`/`React.memo`.
+Build-time Babel plugin — auto-memoizes; drop manual `useMemo`/`useCallback`/`React.memo`.
 
 ```bash
 npx react-compiler-healthcheck       # audit readiness before adopting
@@ -192,7 +219,7 @@ npm i -D babel-plugin-react-compiler eslint-plugin-react-compiler
 // Gradual:   { compilationMode: 'annotation' } → opt in per component with "use memo"
 ```
 
-Manual control still needed for: `useSyncExternalStore` (external stores), Web Workers / Canvas / imperative DOM via refs, `requestAnimationFrame` loops, class components (not processed).
+Manual control still needed: `useSyncExternalStore` (external stores), Web Workers / Canvas / imperative DOM via refs, `requestAnimationFrame` loops, class components (not processed).
 
 ```
 // Gotcha: mutating during render breaks compiler caching — copy first
@@ -201,24 +228,9 @@ Manual control still needed for: `useSyncExternalStore` (external stores), Web W
 
 ## High-Frequency / Real-Time Data
 
-Under ~30 updates/sec per stream: none of this — just RAF-coalesce `setState`. Above it, promote step by step.
+Under ~30 updates/sec per stream: skip all this — RAF-coalesce `setState`. 1kHz per-sample setState ≈ 19k renders/s; batch ~16 samples per frame = 60 renders/s. Whole trick.
 
-```ts
-// 1kHz per-sample setState ≈ 19k renders/s; batching ~16 samples per frame = 60 renders/s. That's the whole trick.
-// 1. External store, not React state — ring buffer over Float32Array (O(1) insert, bounded heap)
-// 2. Split shape from values — React re-renders on shape changes (rare); values never touch React
-// 3. Web Workers — postMessage({samples}, [samples.buffer]) is transferable: O(1), no copy
-// 4. SharedArrayBuffer + Atomics for shared memory (needs cross-origin isolation, see below)
-// 5. canvas.transferControlToOffscreen() → worker draws off the main thread
-// 6. Decimate before drawing (min-max per pixel column) — the biggest CPU win
-// 7. WebGL only when Profiler proves Canvas is the bottleneck
-```
-
-```
-// SharedArrayBuffer requires cross-origin isolation (breaks 3rd-party embeds that don't opt in)
-Cross-Origin-Opener-Policy: same-origin
-Cross-Origin-Embedder-Policy: require-corp
-```
+Above threshold: external store (Float32Array ring buffer, not React state) → split shape from values → Web Worker with transferable buffers → offscreen canvas → decimate before drawing. Full ladder, SharedArrayBuffer COOP/COEP headers, WebSocket production discipline (full-jitter backoff, app-level heartbeats, dedupe by sequence, bufferedAmount backpressure; prefer SSE for one-way streams), stale-response abort handling: → `references/realtime.md`.
 
 ## React 19
 
@@ -282,6 +294,8 @@ function useDebounce<T>(v: T, d: number): T {
 // Validate external/user input at the trust boundary — TS only covers compile time
 // Add CSRF tokens (X-CSRF-Token header) for state-changing requests
 // Test CSP with Content-Security-Policy-Report-Only before enforcing
+// CSS is an attack surface too: remote-font oracles + :has() leak user data/state from
+// untrusted CSS — sandbox iframes, never render user CSS in your origin → references/css-2026.md
 ```
 
 ## A11y
@@ -313,6 +327,7 @@ useEffect(() => {
 
 // Native <dialog>.showModal() gives focus trap + top-layer + Esc + focus return for free
 // inert the background while a custom modal is open (showModal does this itself)
+// UI state via attributes ([aria-busy], [aria-invalid], [aria-current]), not classes — a `.loading` div is invisible to AT
 // :focus-visible for keyboard rings — no mouse-click flicker
 // aria-live="polite" to announce async results; label every control (aria-label / <label>)
 // contrast >= 4.5:1 — contrast-color(var(--bg)) auto-picks black/white per WCAG
@@ -324,11 +339,14 @@ useEffect(() => {
 // CSS/HTML does more — browser does the work; drop the React state + handlers
 // ✅ :has() — parent state toggling, no JS classList
 // ✅ popover — modals/dropdowns, zero JS, light-dismiss, top-layer
-// ✅ container queries — replaces ResizeObserver
-// ✅ @container (<size>)
-{
-}
-+ container-name for scoping (name-only containers)
+// ✅ container queries — replaces ResizeObserver; @container (width > 40em) {}
+//   + container-name for scoping (name-only containers, no size cost)
+// ✅ style queries — @container style(--variant: outline); ⚠ style(--n: 3) is a STRING match
+//   (calc never evaluates) — use style(--n = 3) for numeric
+// ✅ anchor positioning — tooltip placement with zero JS; ⚠ ancestor position/transform breaks
+//   the link (use display:contents wrapper); anchor must precede the tip in DOM order
+// ✅ view transitions — ⚠ 'close' fires AFTER leaving top-layer (too late to animate):
+//   intercept 'request-close'/'cancel' → preventDefault → startViewTransition(() => dialog.close())
 // ✅ scroll-driven animations — replaces JS scroll listeners
 // ✅ scrollbar-gutter: stable — no JS scrollbar width calc
 // ✅ light-dark(lightVal, darkVal) — no @media color-scheme duplication
@@ -341,6 +359,7 @@ useEffect(() => {
 // ✅ popover + popovertarget — menus/light popups, light-dismiss, top-layer, zero JS
 // ✅ <details>/<summary> — accordion; ⚠ open + onToggle fires on mount in React → guard with a mounted ref
 // ✅ appearance: base-select + ::picker(select) + <selectedcontent> — customizable native select
+//   ⚠ unknown ::picker() discards the ENTIRE rule — isolate base-select in its own block, fallback separately
 // ✅ scroll-snap + scroll-marker-group + ::scroll-button() + ::scroll-marker — carousel, no JS
 // ✅ animation-timeline: view() + animation-range — reveal on scroll (wrap in @supports)
 // ✅ :has(#toggle:checked) + color-scheme — dark mode without Context/re-render (persist with tiny JS)
@@ -373,6 +392,8 @@ ds-card {
     /* scoped */
   }
 }
+
+// Deeper recipes (anchor math, VT cross-doc rules, micro-UX, bidi) → references/css-2026.md
 ```
 
 ## Testing
@@ -411,3 +432,5 @@ ds-card {
 | Unsanitized `dangerouslySetInnerHTML`        | DOMPurify        |
 | Missing `alt` / unlabeled control            | Semantic a11y    |
 | Copying query data into `useState`           | Read `useQuery`  |
+| `height:100vh` + `overflow:auto` wrapper     | Root scroller: `min-height:100svh`, `overflow-x: clip` |
+| `AbortError` logged as fetch failure         | Expected cancellation |
